@@ -13,7 +13,7 @@
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include "time.h"
-#include <ESP32MailClient.h> // 用于发送邮件
+// #include <ESP_Mail_Client.h> // 用于发送邮件 (需要安装ESP_Mail_Client库)
 #include <vector>
 
 // ================== 1. 硬件引脚定义 (根据你的实际接线修改这里) ==================
@@ -28,19 +28,19 @@ const char *WIFI_SSID = "iPhone(71)";
 const char *WIFI_PASS = "12345679";
 
 // 华为云 IoTDA 配置
-const char *HUAWEI_MQTT_SERVER = "你的项目ID.iot-mqtts.cn-north-4.myhuaweicloud.com";
-const int HUAWEI_MQTT_PORT = 1883; // 如果使用SSL加密通常是8883
+const char *HUAWEI_MQTT_SERVER = "1fc5f68721.st1.iotda-device.cn-east-3.myhuaweicloud.com";
+const int HUAWEI_MQTT_PORT = 1883;
 const char *MQTT_CLIENT_ID = "69ae7ce618855b39c5010ef5_myArduino_0_0_2026031607";
 const char *MQTT_USERNAME = "69ae7ce618855b39c5010ef5_myArduino";
 const char *MQTT_PASSWORD = "874f2bccd039c02e18e18aff8fdb1f06bd9f9c9d9c5906e6439a4227c532b0e6";
 String DEVICE_ID = "69ae7ce618855b39c5010ef5_myArduino";
 
-// 邮箱配置 (用于摔倒报警)
-#define SMTP_HOST "smtp.qq.com" // 发件人邮箱SMTP服务器
-#define SMTP_PORT 465           // SSL端口
-#define EMAIL_ACCOUNT "你的发件人邮箱@qq.com"
-#define EMAIL_PASSWORD "你的SMTP授权码" // 注意：是授权码，不是登录密码
-const char *EMERGENCY_CONTACT_EMAIL = "紧急联系人邮箱@example.com";
+// 邮箱配置 (用于摔倒报警 - 已禁用)
+// #define SMTP_HOST "smtp.qq.com"
+// #define SMTP_PORT 465
+// #define EMAIL_ACCOUNT "你的发件人邮箱@qq.com"
+// #define EMAIL_PASSWORD "你的SMTP授权码"
+// const char *EMERGENCY_CONTACT_EMAIL = "紧急联系人邮箱@example.com";
 
 // NTP 时间服务器
 const char *NTP_SERVER = "ntp.aliyun.com";
@@ -52,7 +52,7 @@ HardwareSerial NeoSerial(1);
 TinyGPSPlus gps;
 Adafruit_MPU6050 mpu;
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
-SMTPSession smtp;
+// SMTPSession smtp; // 邮件功能 (需要安装ESP_Mail_Client库)
 
 // --- 数据结构：课表 ---
 struct ScheduleItem
@@ -82,6 +82,11 @@ unsigned long lastStatsUpdate = 0;
 // --- 摔倒检测状态 ---
 bool fallDetected = false;
 unsigned long fallTime = 0;
+bool fallAlertSent = false;
+
+// --- 上报状态 ---
+unsigned long lastReportTime = 0;
+const unsigned long REPORT_INTERVAL = 5000; // 5秒上报一次
 
 // ================== 4. 核心功能函数声明 ==================
 void connectToWiFi();
@@ -92,6 +97,8 @@ void checkFallDetection();
 void updateRideStats();
 void sendEmailAlert();
 void drawOLED();
+void reportProperties();
+void reportFallEvent();
 float getDistance(double lat1, double lon1, double lat2, double lon2);
 float getBearing(double lat1, double lon1, double lat2, double lon2);
 
@@ -164,6 +171,13 @@ void loop()
   checkFallDetection(); // 3. 摔倒检测
   updateNavigation();   // 4. 导航逻辑
 
+  // --- 定时上报属性数据 (每5秒) ---
+  if (millis() - lastReportTime >= REPORT_INTERVAL)
+  {
+    reportProperties();
+    lastReportTime = millis();
+  }
+
   // 屏幕显示 (限制刷新率以防闪烁)
   static unsigned long lastDisplay = 0;
   if (millis() - lastDisplay > 200)
@@ -180,8 +194,7 @@ void loop()
 // --- 网络连接 ---
 void connectToWiFi()
 {
-  display.print("WiFi Conn...");
-  display.display();
+  Serial.print("WiFi Connecting...");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -288,39 +301,44 @@ void checkFallDetection()
   {
     fallDetected = true;
     fallTime = millis();
+    fallAlertSent = false;
     Serial.println("⚠️ 检测到摔倒！准备报警...");
     tone(BUZZER_PIN, 1500, 500);
   }
 
-  // 报警触发 (检测到后5秒发送，给用户取消机会可扩展)
-  if (fallDetected && millis() - fallTime > 5000)
+  // 报警触发 (检测到后5秒发送)
+  if (fallDetected && millis() - fallTime > 5000 && !fallAlertSent)
   {
-    sendEmailAlert();
-    // 上传报警到华为云
-    String topic = "$oc/devices/" + DEVICE_ID + "/sys/properties/report";
-    String json = "{\"SOS\":\"FALL_DETECTED\", \"Lat\":" + String(gps.location.lat()) + ", \"Lng\":" + String(gps.location.lng()) + "}";
-    client.publish(topic.c_str(), json.c_str());
-    fallDetected = false; // 重置
+    // sendEmailAlert(); // 邮件报警 (需要安装ESP_Mail_Client库)
+    reportFallEvent(); // 发送跌倒事件到华为云
+    fallAlertSent = true;
+  }
+
+  // 30秒后自动重置（防止一直报警）
+  if (fallDetected && millis() - fallTime > 30000)
+  {
+    fallDetected = false;
+    fallAlertSent = false;
   }
 }
 
-// --- 邮件发送 ---
-void sendEmailAlert()
-{
-  Serial.println("📧 正在发送邮件报警...");
-  String mapLink = "https://uri.amap.com/marker?position=" + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6);
-  String msg = "紧急报警！检测到用户摔倒。\n位置链接: " + mapLink;
+// --- 邮件发送 (已禁用，如需启用请安装ESP_Mail_Client库) ---
+// void sendEmailAlert()
+// {
+//   Serial.println("📧 正在发送邮件报警...");
+//   String mapLink = "https://uri.amap.com/marker?position=" + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6);
+//   String msg = "紧急报警！检测到用户摔倒。\n位置链接: " + mapLink;
 
-  smtp.begin(SMTP_HOST, SMTP_PORT, EMAIL_ACCOUNT, EMAIL_PASSWORD);
-  if (smtp.sendEmail(EMAIL_ACCOUNT, EMERGENCY_CONTACT_EMAIL, "🚨 摔倒报警", msg))
-  {
-    Serial.println("邮件发送成功");
-  }
-  else
-  {
-    Serial.println("邮件发送失败");
-  }
-}
+//   smtp.begin(SMTP_HOST, SMTP_PORT, EMAIL_ACCOUNT, EMAIL_PASSWORD);
+//   if (smtp.sendEmail(EMAIL_ACCOUNT, EMERGENCY_CONTACT_EMAIL, "🚨 摔倒报警", msg))
+//   {
+//     Serial.println("邮件发送成功");
+//   }
+//   else
+//   {
+//     Serial.println("邮件发送失败");
+//   }
+// }
 
 // --- 骑行统计 ---
 void updateRideStats()
@@ -355,6 +373,59 @@ void updateRideStats()
   }
 }
 
+// --- 属性上报 (每5秒) ---
+void reportProperties()
+{
+  if (!client.connected())
+    return;
+
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  double lat = gps.location.isValid() ? gps.location.lat() : 0;
+  double lng = gps.location.isValid() ? gps.location.lng() : 0;
+  double speed = gps.speed.isValid() ? gps.speed.kmph() : 0;
+  double alt = gps.altitude.isValid() ? gps.altitude.meters() : 0;
+
+  float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
+  float roll = atan2(a.acceleration.x, a.acceleration.z) * 180 / PI;
+
+  String topic = "$oc/devices/" + DEVICE_ID + "/sys/properties/report";
+  String json = "{";
+  json += "\"latitude\":" + String(lat, 6) + ",";
+  json += "\"longitude\":" + String(lng, 6) + ",";
+  json += "\"speed\":" + String(speed, 2) + ",";
+  json += "\"altitude\":" + String(alt, 1) + ",";
+  json += "\"accX\":" + String(a.acceleration.x, 3) + ",";
+  json += "\"accY\":" + String(a.acceleration.y, 3) + ",";
+  json += "\"accZ\":" + String(a.acceleration.z, 3) + ",";
+  json += "\"pitch\":" + String(pitch, 2) + ",";
+  json += "\"roll\":" + String(roll, 2);
+  json += "}";
+
+  client.publish(topic.c_str(), json.c_str());
+  Serial.println("[上报] 属性数据已发送");
+}
+
+// --- 跌倒事件上报 ---
+void reportFallEvent()
+{
+  if (!client.connected())
+    return;
+
+  String topic = "$oc/devices/" + DEVICE_ID + "/sys/events";
+  String json = "{";
+  json += "\"event\":\"fall_detected\",";
+  json += "\"data\":{";
+  json += "\"latitude\":" + String(gps.location.isValid() ? gps.location.lat() : 0, 6) + ",";
+  json += "\"longitude\":" + String(gps.location.isValid() ? gps.location.lng() : 0, 6) + ",";
+  json += "\"timestamp\":" + String(millis() / 1000);
+  json += "}}";
+
+  client.publish(topic.c_str(), json.c_str());
+  Serial.println("[上报] 跌倒事件已发送");
+}
+
 // --- OLED 显示 ---
 void drawOLED()
 {
@@ -362,33 +433,63 @@ void drawOLED()
   display.setTextSize(1);
   display.setCursor(0, 0);
 
-  // 状态栏
-  if (isNavigating)
+  // 第1行: GPS状态
+  if (gps.location.isValid())
   {
-    display.print("NAV: ");
-    display.println(navTargetName);
-    display.print("Dist: ");
-    display.print(getDistance(gps.location.lat(), gps.location.lng(), navTargetLat, navTargetLng), 0);
-    display.println("m");
+    display.print("GPS: Fix OK");
   }
   else
   {
-    display.println("Mode: Normal");
+    display.print("GPS: No Fix");
   }
 
-  // 数据栏
+  // 第2行: 经纬度
+  if (gps.location.isValid())
+  {
+    display.setCursor(0, 8);
+    display.print(gps.location.lat(), 5);
+    display.print(",");
+    display.print(gps.location.lng(), 5);
+  }
+
+  // 第3行: 速度
+  display.setCursor(0, 16);
   display.print("Spd: ");
   display.print(gps.speed.kmph(), 1);
-  display.println(" km/h");
-  display.print("Dist: ");
-  display.print(dailyDistance, 2);
-  display.println(" km");
+  display.print(" km/h");
 
+  // 第4行: MPU数据
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+  float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
+  display.setCursor(0, 24);
+  display.print("MPU Pitch:");
+  display.print(pitch, 0);
+  display.print((char)247);
+
+  // 第5行: 跌倒状态
+  display.setCursor(0, 32);
   if (fallDetected)
   {
     display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    display.println("!!! FALL !!!");
+    display.print("!!! FALL DETECTED !!!");
     display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
+  }
+  else
+  {
+    display.print("Status: Normal");
+  }
+
+  // 第6行: 导航状态
+  display.setCursor(0, 40);
+  if (isNavigating)
+  {
+    display.print("NAV:");
+    display.print(navTargetName);
+  }
+  else
+  {
+    display.print("Mode: Normal");
   }
 
   display.display();
