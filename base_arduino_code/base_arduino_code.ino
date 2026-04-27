@@ -32,7 +32,7 @@ const char *HUAWEI_MQTT_SERVER = "1fc5f68721.st1.iotda-device.cn-east-3.myhuawei
 const int HUAWEI_MQTT_PORT = 1883;
 const char *MQTT_CLIENT_ID = "69ae7ce618855b39c5010ef5_myArduino_0_0_2026031607";
 const char *MQTT_USERNAME = "69ae7ce618855b39c5010ef5_myArduino";
-const char *MQTT_PASSWORD = "874f2bccd039c02e18e18aff8fdb1f06bd9f9c9d9c5906e6439a4227c532b0e6";
+const char *MQTT_PASSWORD = "874f2bccd039c02e18e18aff8fdb1f06bd9f9c7d9c5906e6439a4227c532b0e6";
 String DEVICE_ID = "69ae7ce618855b39c5010ef5_myArduino";
 
 // 邮箱配置 (用于摔倒报警 - 已禁用)
