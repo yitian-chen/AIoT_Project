@@ -391,7 +391,7 @@ void reportProperties()
   float roll = atan2(a.acceleration.x, a.acceleration.z) * 180 / PI;
 
   String topic = "$oc/devices/" + DEVICE_ID + "/sys/properties/report";
-  String json = "{";
+  String json = "{\"services\":[{\"service_id\":\"Arduino\",\"properties\":{";
   json += "\"latitude\":" + String(lat, 6) + ",";
   json += "\"longitude\":" + String(lng, 6) + ",";
   json += "\"speed\":" + String(speed, 2) + ",";
@@ -401,7 +401,7 @@ void reportProperties()
   json += "\"accZ\":" + String(a.acceleration.z, 3) + ",";
   json += "\"pitch\":" + String(pitch, 2) + ",";
   json += "\"roll\":" + String(roll, 2);
-  json += "}";
+  json += "}}]}";
 
   client.publish(topic.c_str(), json.c_str());
   Serial.println("[上报] 属性数据已发送");
@@ -414,13 +414,12 @@ void reportFallEvent()
     return;
 
   String topic = "$oc/devices/" + DEVICE_ID + "/sys/events";
-  String json = "{";
+  String json = "{\"services\":[{\"service_id\":\"Arduino\",\"properties\":{";
   json += "\"event\":\"fall_detected\",";
-  json += "\"data\":{";
   json += "\"latitude\":" + String(gps.location.isValid() ? gps.location.lat() : 0, 6) + ",";
   json += "\"longitude\":" + String(gps.location.isValid() ? gps.location.lng() : 0, 6) + ",";
   json += "\"timestamp\":" + String(millis() / 1000);
-  json += "}}";
+  json += "}}]}";
 
   client.publish(topic.c_str(), json.c_str());
   Serial.println("[上报] 跌倒事件已发送");
