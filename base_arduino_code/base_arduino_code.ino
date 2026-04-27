@@ -83,6 +83,14 @@ unsigned long lastStatsUpdate = 0;
 bool fallDetected = false;
 unsigned long fallTime = 0;
 bool fallAlertSent = false;
+unsigned long fallStartTime = 0;      // 首次满足疑似条件的时刻
+bool fallSuspected = false;          // 是否处于疑似状态
+
+// 摔倒检测参数
+const float ACC_THRESHOLD = 3.0;      // 合加速度阈值 (g)
+const float PITCH_THRESHOLD = 55.0;   // 俯仰角阈值 (度)
+const unsigned long FALL_CONFIRM_TIME = 2000; // 持续2秒才确认
+const float GYRO_THRESHOLD = 150.0;   // 陀螺仪阈值 (度/秒)
 
 // --- 上报状态 ---
 unsigned long lastReportTime = 0;
@@ -294,31 +302,70 @@ void checkFallDetection()
   // 计算合加速度
   float accMag = sqrt(a.acceleration.x * a.acceleration.x + a.acceleration.y * a.acceleration.y + a.acceleration.z * a.acceleration.z);
 
-  // 简易摔倒算法：撞击(G值>2.5) + 姿态改变(倾斜角>60度)
+  // 计算俯仰角
   float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
 
-  if (!fallDetected && accMag > 2.5 && abs(pitch) > 60)
+  // 计算陀螺仪合值
+  float gyroMag = sqrt(g.gyro.x * g.gyro.x + g.gyro.y * g.gyro.y + g.gyro.z * g.gyro.z) * 180 / PI;
+
+  // === 阶段1: 疑似检测 ===
+  // 条件：加速度超标 + 姿态倾斜
+  if (!fallDetected && !fallSuspected && accMag > ACC_THRESHOLD && abs(pitch) > PITCH_THRESHOLD)
   {
-    fallDetected = true;
-    fallTime = millis();
-    fallAlertSent = false;
-    Serial.println("⚠️ 检测到摔倒！准备报警...");
-    tone(BUZZER_PIN, 1500, 500);
+    fallSuspected = true;
+    fallStartTime = millis();
+    Serial.println("[摔倒检测] 疑似摔倒，开始计时...");
   }
 
-  // 报警触发 (检测到后5秒发送)
+  // === 阶段2: 确认检测 ===
+  // 疑似状态持续超过2秒，且陀螺仪检测到明显旋转
+  if (!fallDetected && fallSuspected)
+  {
+    unsigned long elapsed = millis() - fallStartTime;
+
+    if (elapsed >= FALL_CONFIRM_TIME)
+    {
+      // 确认条件：持续2秒 + 陀螺仪阈值
+      if (gyroMag > GYRO_THRESHOLD)
+      {
+        fallDetected = true;
+        fallTime = millis();
+        fallAlertSent = false;
+        Serial.println("⚠️ 摔倒确认！准备报警...");
+        tone(BUZZER_PIN, 1500, 500);
+      }
+      else
+      {
+        // 2秒后陀螺仪不达标，取消疑似
+        fallSuspected = false;
+        Serial.println("[摔倒检测] 陀螺仪未达标，解除疑似");
+      }
+    }
+  }
+
+  // === 阶段3: 报警触发 (确认后5秒发送) ===
   if (fallDetected && millis() - fallTime > 5000 && !fallAlertSent)
   {
-    // sendEmailAlert(); // 邮件报警 (需要安装ESP_Mail_Client库)
     reportFallEvent(); // 发送跌倒事件到华为云
     fallAlertSent = true;
   }
 
-  // 30秒后自动重置（防止一直报警）
+  // === 阶段4: 30秒后自动重置 ===
   if (fallDetected && millis() - fallTime > 30000)
   {
     fallDetected = false;
+    fallSuspected = false;
     fallAlertSent = false;
+  }
+
+  // === 取消疑似: 如果条件不再满足且未确认 ===
+  if (fallSuspected && !fallDetected)
+  {
+    if (accMag <= ACC_THRESHOLD || abs(pitch) <= PITCH_THRESHOLD)
+    {
+      fallSuspected = false;
+      Serial.println("[摔倒检测] 条件不满足，解除疑似");
+    }
   }
 }
 
