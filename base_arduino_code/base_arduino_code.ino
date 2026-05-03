@@ -107,6 +107,7 @@ void sendEmailAlert();
 void drawOLED();
 void reportProperties();
 void reportFallEvent();
+void beepBuzzer(unsigned long duration_ms);
 float getDistance(double lat1, double lon1, double lat2, double lon2);
 float getBearing(double lat1, double lon1, double lat2, double lon2);
 
@@ -144,6 +145,10 @@ void setup()
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println("MPU6050 就绪");
+
+  // 初始化有源蜂鸣器
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
 
   // 2. 连接网络
   connectToWiFi();
@@ -210,6 +215,8 @@ void connectToWiFi()
     Serial.print(".");
   }
   Serial.println("\nWiFi Connected");
+  Serial.print("DNS Test: ");
+  Serial.println(WiFi.dnsIP().toString());
 }
 
 void connectToMQTT()
@@ -258,7 +265,7 @@ void checkSchedule()
         navTargetName = item.name;
         item.executed = true;
         Serial.println(">>> 触发课表导航: " + item.name);
-        tone(BUZZER_PIN, 1000, 200); // 提示音
+        beepBuzzer(200); // 提示音
       }
     }
   }
@@ -289,7 +296,7 @@ void updateNavigation()
   {
     Serial.println("到达目的地: " + navTargetName);
     isNavigating = false;
-    tone(BUZZER_PIN, 2000, 1000); // 到达提示音
+    beepBuzzer(1000); // 到达提示音
   }
 }
 
@@ -332,7 +339,7 @@ void checkFallDetection()
         fallTime = millis();
         fallAlertSent = false;
         Serial.println("⚠️ 摔倒确认！准备报警...");
-        tone(BUZZER_PIN, 1500, 500);
+        beepBuzzer(500);
       }
       else
       {
@@ -437,21 +444,34 @@ void reportProperties()
   float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
   float roll = atan2(a.acceleration.x, a.acceleration.z) * 180 / PI;
 
+  // 计算Yaw（积分陀螺仪Z轴）
+  static float yaw = 0;
+  static unsigned long lastYawTime = 0;
+  unsigned long now = millis();
+  if (lastYawTime > 0) {
+    float dt = (now - lastYawTime) / 1000.0;
+    yaw += g.gyro.z * dt;
+  }
+  lastYawTime = now;
+
   String topic = "$oc/devices/" + DEVICE_ID + "/sys/properties/report";
   String json = "{\"services\":[{\"service_id\":\"Arduino\",\"properties\":{";
   json += "\"latitude\":" + String(lat, 6) + ",";
   json += "\"longitude\":" + String(lng, 6) + ",";
   json += "\"speed\":" + String(speed, 2) + ",";
   json += "\"altitude\":" + String(alt, 1) + ",";
-  json += "\"accX\":" + String(a.acceleration.x, 3) + ",";
-  json += "\"accY\":" + String(a.acceleration.y, 3) + ",";
-  json += "\"accZ\":" + String(a.acceleration.z, 3) + ",";
+  json += "\"accelerationX\":" + String(a.acceleration.x, 3) + ",";
+  json += "\"accelerationY\":" + String(a.acceleration.y, 3) + ",";
+  json += "\"accelerationZ\":" + String(a.acceleration.z, 3) + ",";
   json += "\"pitch\":" + String(pitch, 2) + ",";
-  json += "\"roll\":" + String(roll, 2);
+  json += "\"roll\":" + String(roll, 2) + ",";
+  json += "\"yaw\":" + String(yaw, 2) + ",";
+  json += "\"timestamp\":" + String(now / 1000);
   json += "}}]}";
 
   client.publish(topic.c_str(), json.c_str());
-  Serial.println("[上报] 属性数据已发送");
+  Serial.println("[上报] 属性数据已发送:");
+  Serial.println(json);
 }
 
 // --- 跌倒事件上报 ---
@@ -593,4 +613,12 @@ float getBearing(double lat1, double lon1, double lat2, double lon2)
   float x = cos(lat1 * PI / 180.0) * sin(lat2 * PI / 180.0) - sin(lat1 * PI / 180.0) * cos(lat2 * PI / 180.0) * cos(dLon);
   float brng = atan2(y, x);
   return (brng * 180.0 / PI + 360) / 180.0;
+}
+
+// --- 有源蜂鸣器控制 ---
+void beepBuzzer(unsigned long duration_ms)
+{
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(duration_ms);
+  digitalWrite(BUZZER_PIN, LOW);
 }
