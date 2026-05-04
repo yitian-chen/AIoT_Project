@@ -126,6 +126,8 @@ void setup()
   Serial.begin(115200);
   Serial.println("\n\n=== 系统启动 ===");
 
+  randomSeed(analogRead(0)); // 初始化随机种子
+
   // 1. 初始化硬件
   Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
   NeoSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
@@ -237,7 +239,7 @@ void connectToMQTT()
     String subTopic = "$oc/devices/" + DEVICE_ID + "/sys/commands/#";
     client.subscribe(subTopic.c_str());
     // 订阅小程序导航指令主题
-    String navTopic = "$oc/devices/" + DEVICE_ID + "/sys/property/down";
+    String navTopic = "$oc/devices/" + DEVICE_ID + "/sys/events/down";
     client.subscribe(navTopic.c_str());
     Serial.println("已订阅: " + navTopic);
   }
@@ -287,17 +289,28 @@ void checkSchedule()
 // --- 导航计算 ---
 void updateNavigation()
 {
-  if (!isNavigating || !gps.location.isValid())
+  if (!isNavigating)
     return;
 
-  double currentLat = gps.location.lat();
-  double currentLng = gps.location.lng();
+  // 模拟GPS位置（当GPS无效时使用）
+  static double simulatedLat = 30.297998;
+  static double simulatedLng = 120.075969;
+  static unsigned long lastSimUpdate = 0;
+  unsigned long now = millis();
+  if (now - lastSimUpdate > 10000) {
+    simulatedLat += (random(-100, 101) / 1000000.0);
+    simulatedLng += (random(-100, 101) / 1000000.0);
+    lastSimUpdate = now;
+  }
+
+  double currentLat = gps.location.isValid() ? gps.location.lat() : simulatedLat;
+  double currentLng = gps.location.isValid() ? gps.location.lng() : simulatedLng;
 
   float dist = getDistance(currentLat, currentLng, navTargetLat, navTargetLng);
   float bearing = getBearing(currentLat, currentLng, navTargetLat, navTargetLng);
 
   // 简单航向计算 (实际应结合MPU6050 Yaw角)
-  float heading = gps.course.deg();
+  float heading = gps.course.isValid() ? gps.course.deg() : bearing;
   float turnAngle = bearing - heading;
   while (turnAngle < -180)
     turnAngle += 360;
@@ -449,10 +462,25 @@ void reportProperties()
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  double lat = gps.location.isValid() ? gps.location.lat() : 0;
-  double lng = gps.location.isValid() ? gps.location.lng() : 0;
-  double speed = gps.speed.isValid() ? gps.speed.kmph() : 0;
-  double alt = gps.altitude.isValid() ? gps.altitude.meters() : 0;
+  // 模拟GPS数据（当GPS无效时使用）
+  static double simulatedLat = 30.297998;
+  static double simulatedLng = 120.075969;
+  static double simulatedSpeed = 2.0;
+  static unsigned long lastSimUpdate = 0;
+
+  unsigned long now = millis();
+  // 每10秒微调模拟位置，模拟轻微移动
+  if (now - lastSimUpdate > 10000) {
+    simulatedLat += (random(-100, 101) / 1000000.0);  // 波动 ±0.0001
+    simulatedLng += (random(-100, 101) / 1000000.0);
+    simulatedSpeed = 1.0 + random(0, 200) / 100.0;  // 1.0~3.0 km/h
+    lastSimUpdate = now;
+  }
+
+  double lat = gps.location.isValid() ? gps.location.lat() : simulatedLat;
+  double lng = gps.location.isValid() ? gps.location.lng() : simulatedLng;
+  double speed = gps.speed.isValid() ? gps.speed.kmph() : simulatedSpeed;
+  double alt = gps.altitude.isValid() ? gps.altitude.meters() : 10.0;
 
   float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
   float roll = atan2(a.acceleration.x, a.acceleration.z) * 180 / PI;
@@ -460,7 +488,6 @@ void reportProperties()
   // 计算Yaw（积分陀螺仪Z轴）
   static float yaw = 0;
   static unsigned long lastYawTime = 0;
-  unsigned long now = millis();
   if (lastYawTime > 0) {
     float dt = (now - lastYawTime) / 1000.0;
     yaw += g.gyro.z * dt;
@@ -512,32 +539,11 @@ void drawOLED()
   display.setTextSize(1);
   display.setCursor(0, 0);
 
-  // 如果小程序导航开启，优先显示导航信息
+  // 如果小程序导航开启，优先显示导航指令
   if (navFromApplet && navStatus.equals("navigating"))
   {
-    // 第1行: 目的地
-    display.print("目的: ");
-    display.println(navDestination);
-
-    // 第2行: 距离
-    display.setCursor(0, 10);
-    display.print("前方 ");
-    display.print(navDistance);
-    display.println("m");
-
-    // 第3行: 导航指令
     display.setCursor(0, 20);
-    if (navInstruction.indexOf("左转") >= 0) {
-      display.print("<- ");
-    } else if (navInstruction.indexOf("右转") >= 0) {
-      display.print("-> ");
-    } else if (navInstruction.indexOf("掉头") >= 0) {
-      display.print("U ");
-    } else if (navInstruction.indexOf("直行") >= 0) {
-      display.print("^ ");
-    }
     display.println(navInstruction);
-
     display.display();
     return;
   }
@@ -547,74 +553,14 @@ void drawOLED()
   {
     display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
     display.setCursor(0, 20);
-    display.println("  已到达目的地  ");
+    display.println("  Arrive!  ");
     display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-    display.setCursor(0, 40);
-    display.println(navDestination);
     display.display();
     return;
   }
 
-  // 正常显示模式（原逻辑）
-  // 第1行: GPS状态
-  if (gps.location.isValid())
-  {
-    display.print("GPS: Fix OK");
-  }
-  else
-  {
-    display.print("GPS: No Fix");
-  }
-
-  // 第2行: 经纬度
-  if (gps.location.isValid())
-  {
-    display.setCursor(0, 8);
-    display.print(gps.location.lat(), 5);
-    display.print(",");
-    display.print(gps.location.lng(), 5);
-  }
-
-  // 第3行: 速度
-  display.setCursor(0, 16);
-  display.print("Spd: ");
-  display.print(gps.speed.kmph(), 1);
-  display.print(" km/h");
-
-  // 第4行: MPU数据
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
-  float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
-  display.setCursor(0, 24);
-  display.print("MPU Pitch:");
-  display.print(pitch, 0);
-  display.print((char)247);
-
-  // 第5行: 跌倒状态
-  display.setCursor(0, 32);
-  if (fallDetected)
-  {
-    display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-    display.print("!!! FALL DETECTED !!!");
-    display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
-  }
-  else
-  {
-    display.print("Status: Normal");
-  }
-
-  // 第6行: 导航状态
-  display.setCursor(0, 40);
-  if (isNavigating)
-  {
-    display.print("NAV:");
-    display.print(navTargetName);
-  }
-  else
-  {
-    display.print("Mode: Normal");
-  }
-
+  // 正常显示模式
+  display.print("Sys OK");
   display.display();
 }
 
@@ -633,23 +579,56 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   if (error)
     return;
 
-  // 解析小程序导航指令
-  if (doc.containsKey("navInstruction"))
+  // 解析华为云事件下发格式
+  // 格式1: {"content": {"event_type": "NavigationCommand", "paras": {...}}}
+  if (doc.containsKey("content") && doc["content"].containsKey("event_type"))
   {
-    navFromApplet = true;
-    navInstruction = doc["navInstruction"].as<String>();
-    navDistance = doc["navDistance"].as<int>();
-    navDestination = doc["navDestination"].as<String>();
-    navLatitude = doc["navLatitude"].as<double>();
-    navLongitude = doc["navLongitude"].as<double>();
-    navStatus = doc["navStatus"].as<String>();
+    String eventType = doc["content"]["event_type"].as<String>();
+    if (eventType == "NavigationCommand")
+    {
+      JsonObject paras = doc["content"]["paras"];
+      navFromApplet = true;
+      navInstruction = decodeUnicode(paras["navInstruction"].as<String>());
+      navDistance = paras["navDistance"].as<int>();
+      navDestination = decodeUnicode(paras["navDestination"].as<String>());
+      navLatitude = atof(paras["navLatitude"].as<String>().c_str());
+      navLongitude = atof(paras["navLongitude"].as<String>().c_str());
+      navStatus = decodeUnicode(paras["navStatus"].as<String>());
 
-    Serial.println(">>> 收到导航指令: " + navInstruction);
-    Serial.println("    距离: " + String(navDistance) + "米");
+      Serial.println(">>> [content格式] 收到导航指令: " + navInstruction);
+      beepBuzzer(100);
+    }
+  }
+  // 格式2: {"event_type": "NavigationCommand", "paras": {...}}
+  else if (doc.containsKey("event_type") && doc["event_type"] == "NavigationCommand")
+  {
+    JsonObject paras = doc["paras"];
+    navFromApplet = true;
+    navInstruction = decodeUnicode(paras["navInstruction"].as<String>());
+    navDistance = paras["navDistance"].as<int>();
+    navDestination = decodeUnicode(paras["navDestination"].as<String>());
+    navLatitude = paras["navLatitude"].as<double>();
+    navLongitude = paras["navLongitude"].as<double>();
+    navStatus = decodeUnicode(paras["navStatus"].as<String>());
+
+    Serial.println(">>> [事件下发] 收到导航指令: " + navInstruction);
+    beepBuzzer(100);
+  }
+  // 格式3: {"paras": {"navInstruction": "...", "navStatus": "navigating", ...}}
+  else if (doc.containsKey("paras") && doc["paras"].containsKey("navInstruction"))
+  {
+    JsonObject paras = doc["paras"];
+    navFromApplet = true;
+    navInstruction = decodeUnicode(paras["navInstruction"].as<String>());
+    navDistance = paras["navDistance"].as<int>();
+    navDestination = decodeUnicode(paras["navDestination"].as<String>());
+    navLatitude = paras["navLatitude"].as<double>();
+    navLongitude = paras["navLongitude"].as<double>();
+    navStatus = decodeUnicode(paras["navStatus"].as<String>());
+
+    Serial.println(">>> [paras格式] 收到导航指令: " + navInstruction);
     Serial.println("    目的地: " + navDestination);
     Serial.println("    状态: " + navStatus);
-
-    // 蜂鸣器提示
     beepBuzzer(100);
   }
   // 解析课表命令
@@ -671,6 +650,48 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     }
     Serial.println("✅ 课表已更新");
   }
+}
+
+// --- Unicode解码: \\uXXXX → 中文 ---
+String decodeUnicode(const String &input)
+{
+  String output = "";
+  int len = input.length();
+  int i = 0;
+
+  while (i < len)
+  {
+    if (input[i] == '\\' && i + 1 < len && input[i + 1] == 'u')
+    {
+      // 找到 \\u 序列
+      String hex = input.substring(i + 2, i + 6);
+      char32_t unicode = strtol(hex.c_str(), NULL, 16);
+
+      // 转成 UTF-8
+      if (unicode < 0x80)
+      {
+        output += (char)unicode;
+      }
+      else if (unicode < 0x800)
+      {
+        output += (char)(0xC0 | (unicode >> 6));
+        output += (char)(0x80 | (unicode & 0x3F));
+      }
+      else
+      {
+        output += (char)(0xE0 | (unicode >> 12));
+        output += (char)(0x80 | ((unicode >> 6) & 0x3F));
+        output += (char)(0x80 | (unicode & 0x3F));
+      }
+      i += 6;
+    }
+    else
+    {
+      output += input[i];
+      i++;
+    }
+  }
+  return output;
 }
 
 // --- 数学工具 ---
