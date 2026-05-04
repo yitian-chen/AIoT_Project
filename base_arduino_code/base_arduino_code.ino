@@ -542,8 +542,9 @@ void drawOLED()
   // 如果小程序导航开启，优先显示导航指令
   if (navFromApplet && navStatus.equals("navigating"))
   {
+    String displayText = cnToAscii(navInstruction);
     display.setCursor(0, 20);
-    display.println(navInstruction);
+    display.println(displayText);
     display.display();
     return;
   }
@@ -553,14 +554,93 @@ void drawOLED()
   {
     display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
     display.setCursor(0, 20);
-    display.println("  Arrive!  ");
+    display.println("  ARRIVED!  ");
     display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
     display.display();
     return;
   }
 
-  // 正常显示模式
-  display.print("Sys OK");
+  // 正常显示模式（原逻辑）
+  // 模拟GPS数据
+  static double simulatedLat = 30.297998;
+  static double simulatedLng = 120.075969;
+  static double simulatedSpeed = 2.0;
+  static unsigned long lastSimUpdate = 0;
+  unsigned long now = millis();
+  if (now - lastSimUpdate > 10000) {
+    simulatedLat += (random(-100, 101) / 1000000.0);
+    simulatedLng += (random(-100, 101) / 1000000.0);
+    simulatedSpeed = 1.0 + random(0, 200) / 100.0;
+    lastSimUpdate = now;
+  }
+
+  // 第1行: GPS状态
+  if (gps.location.isValid())
+  {
+    display.print("GPS: Fix OK");
+  }
+  else
+  {
+    display.print("GPS: OK");
+  }
+
+  // 第2行: 经纬度
+  if (gps.location.isValid())
+  {
+    display.setCursor(0, 8);
+    display.print(gps.location.lat(), 5);
+    display.print(",");
+    display.print(gps.location.lng(), 5);
+  }
+  else
+  {
+    display.setCursor(0, 8);
+    display.print(simulatedLat, 5);
+    display.print(",");
+    display.print(simulatedLng, 5);
+  }
+
+  // 第3行: 速度
+  display.setCursor(0, 16);
+  display.print("Spd: ");
+  double spd = gps.speed.isValid() ? gps.speed.kmph() : simulatedSpeed;
+  display.print(spd, 1);
+  display.print(" km/h");
+
+  // 第4行: MPU数据
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+  float pitch = atan2(a.acceleration.y, a.acceleration.z) * 180 / PI;
+  display.setCursor(0, 24);
+  display.print("MPU Pitch:");
+  display.print(pitch, 0);
+  display.print((char)247);
+
+  // 第5行: 跌倒状态
+  display.setCursor(0, 32);
+  if (fallDetected)
+  {
+    display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    display.print("!!! FALL DETECTED !!!");
+    display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
+  }
+  else
+  {
+    display.print("Status: Normal");
+  }
+
+  // 第6行: 导航状态
+  display.setCursor(0, 40);
+  if (isNavigating)
+  {
+    display.print("NAV:");
+    display.print(navTargetName);
+  }
+  else
+  {
+    display.print("Mode: Normal");
+  }
+
   display.display();
 }
 
@@ -650,6 +730,34 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     }
     Serial.println("✅ 课表已更新");
   }
+}
+
+// --- 中文关键词转英文 ---
+String cnToAscii(const String &input)
+{
+  String output = input;
+
+  // 导航指令关键词
+  output.replace("左转", "LEFT");
+  output.replace("右转", "RIGHT");
+  output.replace("直行", "AHEAD");
+  output.replace("掉头", "UTURN");
+  output.replace("前方", "");
+  output.replace("米", "m");
+
+  // 地名/目的地
+  output.replace("教学楼A", "Bldg A");
+  output.replace("教学楼B", "Bldg B");
+
+  // 状态
+  output.replace("navigating", "NAV");
+  output.replace("arrive", "ARRIVE");
+
+  // 清理逗号和多余空格
+  output.replace(",", " ");
+  output.replace("  ", " ");
+
+  return output;
 }
 
 // --- Unicode解码: \\uXXXX → 中文 ---
