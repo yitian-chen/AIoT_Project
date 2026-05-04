@@ -72,6 +72,15 @@ bool isNavigating = false;
 double navTargetLat, navTargetLng;
 String navTargetName = "";
 
+// --- 小程序导航状态 ---
+String navInstruction = "";      // 导航指令文本
+int navDistance = 0;            // 距转向点距离（米）
+String navDestination = "";     // 目的地方名称
+double navLatitude = 0;         // 目的地方纬度
+double navLongitude = 0;        // 目的地方经度
+String navStatus = "off";       // 导航状态：off/navigating/arrive
+bool navFromApplet = false;     // 是否来自小程序的导航
+
 // --- 骑行统计 ---
 float dailyDistance = 0.0;
 unsigned long rideStartTime = 0;
@@ -227,6 +236,10 @@ void connectToMQTT()
     // 订阅华为云命令主题
     String subTopic = "$oc/devices/" + DEVICE_ID + "/sys/commands/#";
     client.subscribe(subTopic.c_str());
+    // 订阅小程序导航指令主题
+    String navTopic = "$oc/devices/" + DEVICE_ID + "/sys/property/down";
+    client.subscribe(navTopic.c_str());
+    Serial.println("已订阅: " + navTopic);
   }
   else
   {
@@ -499,6 +512,50 @@ void drawOLED()
   display.setTextSize(1);
   display.setCursor(0, 0);
 
+  // 如果小程序导航开启，优先显示导航信息
+  if (navFromApplet && navStatus.equals("navigating"))
+  {
+    // 第1行: 目的地
+    display.print("目的: ");
+    display.println(navDestination);
+
+    // 第2行: 距离
+    display.setCursor(0, 10);
+    display.print("前方 ");
+    display.print(navDistance);
+    display.println("m");
+
+    // 第3行: 导航指令
+    display.setCursor(0, 20);
+    if (navInstruction.indexOf("左转") >= 0) {
+      display.print("<- ");
+    } else if (navInstruction.indexOf("右转") >= 0) {
+      display.print("-> ");
+    } else if (navInstruction.indexOf("掉头") >= 0) {
+      display.print("U ");
+    } else if (navInstruction.indexOf("直行") >= 0) {
+      display.print("^ ");
+    }
+    display.println(navInstruction);
+
+    display.display();
+    return;
+  }
+
+  // 如果导航到达，显示到达信息
+  if (navFromApplet && navStatus.equals("arrive"))
+  {
+    display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+    display.setCursor(0, 20);
+    display.println("  已到达目的地  ");
+    display.setTextColor(SSD1306_WHITE, SSD1306_BLACK);
+    display.setCursor(0, 40);
+    display.println(navDestination);
+    display.display();
+    return;
+  }
+
+  // 正常显示模式（原逻辑）
   // 第1行: GPS状态
   if (gps.location.isValid())
   {
@@ -561,12 +618,14 @@ void drawOLED()
   display.display();
 }
 
-// --- MQTT 回调 (接收课表) ---
+// --- MQTT 回调 (接收课表和导航指令) ---
 void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
   String msg = "";
   for (int i = 0; i < length; i++)
     msg += (char)payload[i];
+
+  Serial.println("[MQTT收到] " + msg);
 
   // 解析 JSON 命令
   StaticJsonDocument<1024> doc;
@@ -574,8 +633,27 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   if (error)
     return;
 
-  // 假设云端下发格式: {"command": "SET_SCHEDULE", "data": [{"day":1, "hour":8, ...}]}
-  if (doc["command"] == "SET_SCHEDULE")
+  // 解析小程序导航指令
+  if (doc.containsKey("navInstruction"))
+  {
+    navFromApplet = true;
+    navInstruction = doc["navInstruction"].as<String>();
+    navDistance = doc["navDistance"].as<int>();
+    navDestination = doc["navDestination"].as<String>();
+    navLatitude = doc["navLatitude"].as<double>();
+    navLongitude = doc["navLongitude"].as<double>();
+    navStatus = doc["navStatus"].as<String>();
+
+    Serial.println(">>> 收到导航指令: " + navInstruction);
+    Serial.println("    距离: " + String(navDistance) + "米");
+    Serial.println("    目的地: " + navDestination);
+    Serial.println("    状态: " + navStatus);
+
+    // 蜂鸣器提示
+    beepBuzzer(100);
+  }
+  // 解析课表命令
+  else if (doc["command"] == "SET_SCHEDULE")
   {
     weeklySchedule.clear();
     JsonArray items = doc["data"];
